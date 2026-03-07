@@ -1,6 +1,6 @@
-from CarRental.Inventory.Inventory import Inventory
-from ..ReservationManager.reservation_manager import ReservationManager
-from ..Payment.PaymentManager.payment_manager import PaymentManager
+from Inventory.inventory import Inventory
+from ReservationManager.reservation_manager import ReservationManager
+from Payment.PaymentManager.payment_manager import PaymentManager
 
 class CarRentalSystem:
     def __init__(self, inventory : Inventory, reservation_manager : ReservationManager, payment_manager : PaymentManager):
@@ -20,6 +20,4 @@ class CarRentalSystem:
         except Exception as e:
             print(e)
             return None
-
-        
     

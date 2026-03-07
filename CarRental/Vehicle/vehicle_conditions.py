@@ -1,7 +1,7 @@
-import enum
+from enum import Enum
 
-class VehicleCondidtion(enum):
-    "LOW" = 1,
-    "MED" = 2,
-    "HIGH" = 3
+class VehicleCondidtion(Enum):
+    LOW = 1,
+    MED = 2,
+    HIGH = 3
 

@@ -1,9 +1,9 @@
-from vehicle_conditions import VehicleCondidtion
-from vehicle_state import VehicleState
+from Vehicle.vehicle_conditions import VehicleCondidtion
+from Vehicle.vehicle_state import VehicleState
 
 class Vehicle():
     def __init__(self, registration_number, type, model, make_year, condidtion : VehicleCondidtion, state : VehicleState, rental_price):
-        self.registration_number = registration_number
+        self.id = registration_number
         self.type = type
         self.model = model
         self.make_year = make_year

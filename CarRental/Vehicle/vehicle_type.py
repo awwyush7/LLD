@@ -1,6 +1,6 @@
-import enum
+from enum import Enum
 
-class VehicleType(enum):
-    "CAR" = 1,
-    "BIKE" = 2,
-    "SCOOTY" = 3
+class VehicleType(Enum):
+    CAR = 1
+    BIKE = 2
+    SCOOTY = 3

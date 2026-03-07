@@ -1,4 +1,4 @@
-from ..Bill import Bill
+from Payment.Bill.bill import Bill
 
 class PaymentManager:
     def __init__(self, payment_provider):

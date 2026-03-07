@@ -1,6 +1,6 @@
-import enum
+from enum import Enum
 
-class VehicleState(enum):
-    "AVAILABLE" = 1,
-    "RENTED" = 2,
-    "OUTOFSERVICE" = 3
+class VehicleState(Enum):
+    AVAILABLE = 1
+    RENTED = 2
+    OUTOFSERVICE = 3

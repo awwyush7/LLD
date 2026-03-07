@@ -1,5 +1,5 @@
 from typing import Dict
-from reservation_status import ReservationStatus
+from Reservation.reservation_status import ReservationStatus
 
 class Reservation:
     def __init__(self, id, user_id, vehicle_id, from_date, to_date):

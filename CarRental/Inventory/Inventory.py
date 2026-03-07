@@ -1,5 +1,5 @@
 from typing import List
-from CarRental.Vehicle.Vehicle import Vehicle
+from Vehicle.vehicle import Vehicle
 from threading import Lock
 class VehicleAlreadyPresent(Exception):
     pass
@@ -13,7 +13,7 @@ class Inventory:
 
     def get_vehicle(self):
         vehicles = []
-        for vehicle_id, vehicle in self.vehicles_available:
+        for vehicle_id, vehicle in self.vehicles_available.items():
             vehicles.append(vehicle_id)
         return vehicles
 
