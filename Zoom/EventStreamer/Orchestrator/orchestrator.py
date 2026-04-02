@@ -11,4 +11,6 @@ class EventStreamer:
         return await self.__events[topic].add(event)
 
     async def get(self, topic):
+        if topic not in self.__events:
+            self.__events[topic] = EventQueue()
         return await self.__events[topic].get()

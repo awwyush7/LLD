@@ -8,5 +8,9 @@ class Vehicle:
         self._model_year = model_year
         self._vehicle_status = vehicle_status
         self.lock = Lock()
+        
+    @property
+    def id(self):
+        return self._id
 
     

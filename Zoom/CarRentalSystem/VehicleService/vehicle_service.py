@@ -7,5 +7,8 @@ class VehicleService:
     def add_vehicle(self, vehicle : Vehicle):
         self._vehicles[vehicle.id] = vehicle
 
+    def get(self, vehicle_id):
+        return self._vehicles.get(vehicle_id)
+    
     def remove_vehicle(self, vehicle_id):
-        self._vehicles.remove(vehicle_id)
+        self._vehicles.pop(vehicle_id,None)

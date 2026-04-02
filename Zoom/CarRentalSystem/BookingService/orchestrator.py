@@ -1,30 +1,29 @@
-from Zoom.CarRentalSystem.BookingService.booking_service import BookingService
+from pydantic import TypeAdapter
+from Zoom.EventStreamer.Event.event import AnyEvent
+from Zoom.CarRentalSystem.BookingService.booking_service import BookingService 
+
 
 class Orchestrator:
-    def __init__(self, booking_service, event_handler):
+    def __init__(self, booking_service: BookingService, event_handler):
         self._booking_service = booking_service
-        self.event_handler = event_handler
+        self._event_handler = event_handler
         self._handler = {
-            "CanelBooking" : BookingService.remove_booking,
-            "FailedPayment" : BookingService.remove_booking,
-            "Book" : BookingService.book_vehicles
+            "book": booking_service.book_vehicles,
+            "payment_success": booking_service.confirm_booking,
+            "payment_failure": booking_service.remove_booking
         }
-
-    async def get_tasks(self):
-        return await self.event_handler.get_tasks()
+        self._adapter = TypeAdapter(AnyEvent)
     
-    async def process(self,message):
-        message_action = message["Action"]
-        vehicle_ids = message["vehicle_ids"]
-        from_date = message["from_date"]
-        to_date = message["to_date"]
-
-        self._handler[message_action](vehicle_ids, from_date, to_date)
-
-# Topic - Booking
-# 1) CancelBooking
-# 2) SuccessfulPayment
-# 3) FailedPayment
-# 4) Book
-
+    async def get_task(self, topic: str):
+        return await self._event_handler.get_tasks(topic)
     
+    async def process(self, raw_event: dict):
+        event = self._adapter.validate_python(raw_event)
+        handler= self._handler.get(event.type)
+        print(f"[BookingService] Processing event type={event.type} ")
+        if handler:
+            # print(handler)
+            # print(event)
+            await handler(event)
+        else:
+            print (f"[BookingService] No handler for event type: {event.type}")

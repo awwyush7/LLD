@@ -27,11 +27,15 @@ class EventHandler:
                 # This is normal for long polling. The server held the 
                 # connection but no message arrived. Just loop again.
                 continue
-            
-            except Exception as e:
-                raise e
 
-    async def put_task(self, topic, task):
+    async def add(self, topic, event):
+        response = await self.client.post(
+            f"{self.url}/put/{topic.value}",
+            json = event.model_dump(mode = "json")
+        )
+        response.raise_for_status()
+        return response.json
+    
         while True:
             try:
                 response = await self.client.post(f"{self.url}/put/{topic}", json={"event": task})

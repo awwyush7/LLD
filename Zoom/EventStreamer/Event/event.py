@@ -1,14 +1,69 @@
+from __future__ import annotations
+from pydantic import BaseModel, Field
+from typing import Literal, Union, Annotated, List 
+import uuid
+from datetime import datetime
 
-class Event:
-    pass
 
-class BookingEvent(Event):
-    def __init__(self, action, **kwgs):
-        self._vehicle_ids = kwgs[0]
-        self._from_date = kwgs[1]
-        self._to_date = kwgs[2]
-        self._action = action
-    
-class PaymentEvent(Event):
-    def __init__(self, amount):
-        self._amount = amount
+class Event (BaseModel):
+    event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    correlation_id: str
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BookEvent (Event):
+    type: Literal["book"] = "book"
+    vehicle_ids: List[str]
+    user_id: str 
+    from_date: int 
+    to_date: int
+
+
+class PaymentRequestEvent(Event):
+    type: Literal["payment_request"] = "payment_request"
+    booking_id: str 
+    user_id:str 
+    amount: float 
+    vehicle_ids: List[str]
+    from_date: int 
+    to_date: int
+
+
+class PaymentSuccessEvent (Event) :
+    type: Literal["payment_success"] = "payment_success"
+    booking_id: str 
+    user_id: str
+    vehicle_ids: List[str]
+    from_date: int 
+    to_date: int
+
+
+class PaymentFailureEvent(Event):
+    type : Literal["payment_failure"] = "payment_failure"
+    booking_id: str
+    uer_id: str
+    vehicle_ids: List[str]
+    from_date: int
+    to_date: int
+    reason: str
+
+
+class GenerateTicketEvent(Event):
+    type : Literal["generate_ticket"] = "generate_ticket"
+    booking_id: str
+    user_id: str
+    vehicle_ids: List[str]
+    from_date: int
+    to_date: int
+
+
+AnyEvent = Annotated[
+    Union[
+        BookEvent,
+        PaymentRequestEvent,
+        PaymentSuccessEvent,
+        PaymentFailureEvent,
+        GenerateTicketEvent,
+    ],
+    Field(discriminator="type")
+]
