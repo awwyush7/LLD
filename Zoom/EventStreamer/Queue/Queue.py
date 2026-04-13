@@ -3,7 +3,7 @@ import asyncio
 
 class EventQueue:
     def __init__(self):
-        self.__queue = Queue(10)
+        self.__queue = Queue(1500)
 
     async def add(self, event):
         try:
