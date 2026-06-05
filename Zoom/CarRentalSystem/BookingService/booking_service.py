@@ -1,123 +1,108 @@
-from typing import Optional, List 
+import time
 from Zoom.EventStreamer.Topic.topic import Topic
+from Zoom.CarRentalSystem.Repository.booking_repository import BookingRepository
+from Zoom.CarRentalSystem.metrics import (
+    booking_events_processed_total,
+    booking_slots_pending,
+    booking_slots_booked,
+    booking_lock_failures_total,
+    event_processing_duration_seconds,
+)
 
 
 class BookingService:
-    def __init__(self, vehicle_service, event_streamer):
-        self._vehicle_service = vehicle_service
+    def __init__(self, repo: BookingRepository, event_streamer):
+        self._repo = repo
         self._event_streamer = event_streamer
-        self._bookings = {} # (vehicle_id: {date: "pending" | "booked"}}
 
-    async def book_vehicles(self, event) -> Optional[str]:
-        """Handles BookEvent: acquire locks →mark pending → release → publish PaymentRequestEvent."""
-        print("BOOKING STARTED")
+    async def book_vehicles(self, event) -> None:
+        """Handles BookEvent: mark pending in DB → publish PaymentRequestEvent.
+        DB transaction holds SELECT FOR UPDATE, so no in-process locks needed."""
+        t0 = time.perf_counter()
         vehicle_ids = event.vehicle_ids
         from_date = event.from_date
         to_date = event.to_date
         booking_id = event.correlation_id
 
-        sorted_ids = sorted(vehicle_ids)
-        acquired = []
-        try:
-            for vid in sorted_ids:
-                vehicle = self._vehicle_service.get(vid)
-                if vehicle is None:
-                    print("Vehicle is Nonde")
-                if vehicle is None or not vehicle.lock.acquire(blocking=False):
-                    return None
-                print(f"BOOKING: Lock for {vid} acquired")
-                acquired.append(vid)
-            
-            if not self.vehicles_available(vehicle_ids, from_date, to_date):
-                return None
-            
-            for vid in sorted_ids:
-                for i in range(from_date, to_date + 1):
-                    self._bookings.setdefault(vid, {})[i] = "pending"
-        finally:
-            for vid in reversed (acquired):
-                self._vehicle_service.get (vid) .lock. release()
-        
-        print(f"Booking For {vehicle_ids}")
+        success = await self._repo.mark_pending(booking_id, vehicle_ids, from_date, to_date)
+        if not success:
+            booking_lock_failures_total.inc()
+            print(f"[BookingService] Slots unavailable for booking={booking_id[:8]}")
+            # Publish failure event so TicketService can respond to frontend
+            from Zoom.EventStreamer.Event.event import BookingFailedEvent
+            await self._event_streamer.add(
+                Topic.TicketTopic,
+                BookingFailedEvent(
+                    correlation_id=booking_id,
+                    booking_id=booking_id,
+                    user_id=event.user_id,
+                    vehicle_ids=vehicle_ids,
+                    from_date=from_date,
+                    to_date=to_date,
+                    reason="Selected vehicles are not available for the requested dates",
+                ),
+            )
+            booking_events_processed_total.labels(event_type="book_failed").inc()
+            return
 
-        # Publish OUTSIDE the lock - timeout here no longer holds the lock
-        from Zoom. EventStreamer.Event.event import PaymentRequestEvent 
+        booking_slots_pending.inc(len(vehicle_ids) * (to_date - from_date + 1))
+
+        # DB committed — now publish (known gap: publish failure after commit is acceptable for now)
+        from Zoom.EventStreamer.Event.event import PaymentRequestEvent
         await self._event_streamer.add(
             Topic.PaymentTopic,
             PaymentRequestEvent(
-                correlation_id=booking_id, 
-                booking_id=booking_id, 
+                correlation_id=booking_id,
+                booking_id=booking_id,
                 user_id=event.user_id,
-                amount=100.0, # TODO: calculate from vehicle type + date range 
-                vehicle_ids=vehicle_ids, 
-                from_date=from_date, 
+                amount=100.0,  # TODO: calculate from vehicle type + date range
+                vehicle_ids=vehicle_ids,
+                from_date=from_date,
                 to_date=to_date,
             ),
         )
-        return booking_id
-            
+        booking_events_processed_total.labels(event_type="book").inc()
+        event_processing_duration_seconds.labels(event_type="book").observe(time.perf_counter() - t0)
+
     async def confirm_booking(self, event) -> None:
-        """Handles PaymentsuccessEvent: mark booked publish GeneratericketEvent."""
+        """Handles PaymentSuccessEvent: mark booked in DB → publish GenerateTicketEvent."""
+        t0 = time.perf_counter()
         vehicle_ids = event.vehicle_ids
         from_date = event.from_date
         to_date = event.to_date
         booking_id = event.booking_id
 
-        sorted_ids = sorted (vehicle_ids)
-        acquired = []
-        try:
-            for vid in sorted_ids:
-                vehicle = self._vehicle_service.get(vid)
-                if vehicle is None or not vehicle.lock.acquire(blocking=False):
-                    return
-                acquired.append(vid)
-            
-            for vid in sorted_ids:
-                for i in range(from_date, to_date + 1):
-                    self._bookings.setdefault(vid, ())[i] = "booked"
-        finally:
-            for vid in reversed (acquired):
-                self._vehicle_service.get(vid).lock.release()
+        await self._repo.confirm_booking(booking_id, vehicle_ids, from_date, to_date)
 
-        from Zoom. EventStreamer.Event. event import GenerateTicketEvent 
+        slots = len(vehicle_ids) * (to_date - from_date + 1)
+        booking_slots_pending.dec(slots)
+        booking_slots_booked.inc(slots)
+
+        from Zoom.EventStreamer.Event.event import GenerateTicketEvent
         await self._event_streamer.add(
-            Topic. TicketTopic,
+            Topic.TicketTopic,
             GenerateTicketEvent(
-                correlation_id = booking_id,
-                booking_id=booking_id, 
-                user_id=event.user_id, 
-                vehicle_ids=vehicle_ids, 
+                correlation_id=booking_id,
+                booking_id=booking_id,
+                user_id=event.user_id,
+                vehicle_ids=vehicle_ids,
                 from_date=from_date,
-                to_date = to_date,
+                to_date=to_date,
             ),
         )
+        booking_events_processed_total.labels(event_type="payment_success").inc()
+        event_processing_duration_seconds.labels(event_type="payment_success").observe(time.perf_counter() - t0)
 
     async def remove_booking(self, event) -> None:
-        """Handles CancelBooking / PaymentFailureEvent: free the slots."""
+        """Handles PaymentFailureEvent: delete pending slots from DB."""
+        t0 = time.perf_counter()
         vehicle_ids = event.vehicle_ids
         from_date = event.from_date
         to_date = event.to_date
+        booking_id = event.booking_id
 
-        sorted_ids = sorted(vehicle_ids)
-        acquired = []
-        try:
-            for vid in sorted_ids:
-                vehicle = self._vehicle_service.get(vid)
-                if vehicle is None or not vehicle.lock.acquire(blocking=False):
-                    return 
-                acquired.append(vid)
+        await self._repo.remove_booking(booking_id, vehicle_ids, from_date, to_date)
 
-            for vid in sorted_ids:
-                slots = self._bookings.get(vid, ())
-                for i in range(from_date, to_date + 1):
-                    slots.pop(i, None)
-        finally:
-            for vid in reversed (acquired):
-                self._vehicle_service.get(vid).lock.release()
-    
-    def is_available(self, vehicle_id: str, from_date: int, to_date: int) -> bool:
-        slots = self._bookings.get(vehicle_id, {})
-        return all (slots.get(i) not in ("pending", "booked") for i in range(from_date, to_date + 1)) 
-    
-    def vehicles_available(self, vehicle_ids: List[str], from_date: int, to_date: int) -> bool:
-        return all(self.is_available(vid, from_date, to_date) for vid in vehicle_ids)
+        booking_slots_pending.dec(len(vehicle_ids) * (to_date - from_date + 1))
+        booking_events_processed_total.labels(event_type="payment_failure").inc()
+        event_processing_duration_seconds.labels(event_type="payment_failure").observe(time.perf_counter() - t0)
