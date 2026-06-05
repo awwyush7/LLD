@@ -1,0 +1,105 @@
+# Compatible with both Docker Compose and Podman Compose
+# Docker: docker compose up --build
+# Podman: podman-compose -f podman-compose.yml up --build
+#         (or use podman-compose.yml which has host.containers.internal instead)
+
+services:
+  # Event streaming service — message hub for inter-service communication
+  event-streamer:
+    build:
+      context: .
+      dockerfile: Zoom/EventStreamer/Dockerfile
+    container_name: carrental-event-streamer
+    ports:
+      - "8000:8000"
+    networks:
+      - carrental-net
+    restart: unless-stopped
+
+  # Booking service — handles slot reservations with DB transactions
+  booking-service:
+    build:
+      context: .
+      dockerfile: Zoom/CarRentalSystem/BookingService/Dockerfile
+    container_name: carrental-booking-service
+    environment:
+      - DATABASE_URL=postgresql://postgres:Ayush%402002@host.docker.internal/carrental
+      - STREAMER_URL=http://event-streamer:8000
+    depends_on:
+      - event-streamer
+    networks:
+      - carrental-net
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Allow container to reach host PostgreSQL
+
+  # Payment service — processes payments (stub for now)
+  payment-service:
+    build:
+      context: .
+      dockerfile: Zoom/CarRentalSystem/PaymentService/Dockerfile
+    container_name: carrental-payment-service
+    environment:
+      - STREAMER_URL=http://event-streamer:8000
+    depends_on:
+      - event-streamer
+    networks:
+      - carrental-net
+    restart: unless-stopped
+
+  # Ticket service — user-facing API gateway
+  ticket-service:
+    build:
+      context: .
+      dockerfile: Zoom/CarRentalSystem/TicketService/Dockerfile
+    container_name: carrental-ticket-service
+    environment:
+      - DATABASE_URL=postgresql://postgres:Ayush%402002@host.docker.internal/carrental
+      - STREAMER_URL=http://event-streamer:8000
+    ports:
+      - "8001:8001"
+    depends_on:
+      - event-streamer
+    networks:
+      - carrental-net
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # nginx — reverse proxy in front of TicketService
+  nginx:
+    build:
+      context: nginx
+      dockerfile: Dockerfile
+    container_name: carrental-nginx
+    ports:
+      - "80:80"
+    depends_on:
+      - ticket-service
+      - event-streamer
+    networks:
+      - carrental-net
+    restart: unless-stopped
+  
+  postgres:
+    image: postgres:16-alpine
+    container_name: carrental-postgres
+    environment:
+      - POSTGRES_DB=carrental
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=Ayush@2002
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    networks:
+      - carrental-net
+    restart: unless-stopped
+
+networks:
+  carrental-net:
+    driver: bridge
+
+volumes:
+  postgres-data:

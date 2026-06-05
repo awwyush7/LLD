@@ -6,6 +6,7 @@ Requirements:
 4) Payment will be handled by 3rd party APIs.
 5) Concurrent Users are allowed.
 
+
 Entities:
 
 1) Vehicle
