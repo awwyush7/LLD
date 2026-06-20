@@ -1,43 +1,47 @@
-import time
-from Zoom.EventStreamer.Topic.topic import Topic
-# from Zoom.CarRentalSystem.metrics import payments_processed_total, payment_duration_seconds
+import httpx
+from Zoom.CarRentalSystem.Repository.payment_intent_repository import PaymentIntentRepository
 
 
 class PaymentService:
-    def __init__(self, event_streamer):
-        self._event_streamer = event_streamer
+    def __init__(self, repo: PaymentIntentRepository, stripe_url: str):
+        self._repo = repo
+        self._stripe_url = stripe_url
+        self._http = httpx.AsyncClient()
 
     async def process_payment(self, event) -> None:
-        """Handles PaymentRequestEvent: charge → publish PaymentSuccessEvent or PaymentFailureEvent to BookingTopic."""
-        t0 = time.perf_counter()
-        success = await self._charge(event.user_id, event.amount)
+        """
+        Handles PaymentRequestEvent.
+        1. Record intent in DB (idempotent).
+        2. Call Stripe to create a checkout session → get redirect_url.
+        3. Store session info. Done — no event published here.
+        Stripe will call our webhook when the user pays (or fails).
+        """
+        await self._repo.create(
+            booking_id=event.booking_id,
+            user_id=event.user_id,
+            amount=event.amount,
+            vehicle_ids=event.vehicle_ids,
+            from_date=event.from_date,
+            to_date=event.to_date,
+        )
 
-        from Zoom.EventStreamer.Event.event import PaymentSuccessEvent, PaymentFailureEvent
+        resp = await self._http.post(
+            f"{self._stripe_url}/v1/checkout/sessions",
+            json={
+                "booking_id": event.booking_id,
+                "amount": event.amount,
+                "user_id": event.user_id,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
-        if success:
-            result = PaymentSuccessEvent(
-                correlation_id=event.correlation_id,
-                booking_id=event.booking_id,
-                user_id=event.user_id,
-                vehicle_ids=event.vehicle_ids,
-                from_date=event.from_date,
-                to_date=event.to_date,
-            )
-        else:
-            result = PaymentFailureEvent(
-                correlation_id=event.correlation_id,
-                booking_id=event.booking_id,
-                user_id=event.user_id,
-                vehicle_ids=event.vehicle_ids,
-                from_date=event.from_date,
-                to_date=event.to_date,
-                reason="Payment declined",
-            )
+        await self._repo.mark_awaiting_payment(
+            booking_id=event.booking_id,
+            stripe_session_id=data["session_id"],
+            redirect_url=data["redirect_url"],
+        )
+        print(f"[PaymentService] Intent awaiting payment  booking={event.booking_id[:8]}")
 
-        await self._event_streamer.add(Topic.BookingTopic, result)
-        # payments_processed_total.labels(result="success" if success else "failure").inc()
-        # payment_duration_seconds.observe(time.perf_counter() - t0)
-
-    async def _charge(self, user_id: str, amount: float) -> bool:
-        # Stub: replace with Stripe / Razorpay call
-        return True
+    async def close(self) -> None:
+        await self._http.aclose()

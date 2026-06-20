@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-load_dotenv()  # Load .env file before other imports
+load_dotenv()
 
 import asyncio
 import os
@@ -7,11 +7,14 @@ from pydantic import TypeAdapter
 
 from Zoom.CarRentalSystem.EventHandler.kafka_event_handler import KafkaEventHandler
 from Zoom.CarRentalSystem.PaymentService.payment_service import PaymentService
+from Zoom.CarRentalSystem.Repository.Postgres.db import get_pool, close_pool
+from Zoom.CarRentalSystem.Repository.Postgres.postgres_payment_intent_repository import PostgresPaymentIntentRepository
 from Zoom.EventStreamer.Event.event import AnyEvent
 from Zoom.EventStreamer.Topic.topic import Topic
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "payment-service-group")
+STRIPE_URL = os.getenv("STRIPE_URL", "http://localhost:8003")
 
 
 async def start():
@@ -19,7 +22,9 @@ async def start():
     await event_handler.start()
     print(f"[PaymentService] Connected to Kafka at {KAFKA_BOOTSTRAP_SERVERS}")
 
-    payment_service = PaymentService(event_handler)
+    pool = await get_pool()
+    intent_repo = PostgresPaymentIntentRepository(pool)
+    payment_service = PaymentService(intent_repo, STRIPE_URL)
     adapter = TypeAdapter(AnyEvent)
 
     print(f"[PaymentService] Listening on {Topic.PaymentTopic.value}...")
@@ -30,7 +35,9 @@ async def start():
             print(f"[PaymentService] Got {event.type}  booking={event.booking_id[:8]}")
             asyncio.create_task(payment_service.process_payment(event))
     finally:
+        await payment_service.close()
         await event_handler.stop()
+        await close_pool()
 
 
 if __name__ == "__main__":

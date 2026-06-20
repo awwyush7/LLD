@@ -41,7 +41,7 @@ class PaymentSuccessEvent (Event) :
 class PaymentFailureEvent(Event):
     type : Literal["payment_failure"] = "payment_failure"
     booking_id: str
-    uer_id: str
+    user_id: str
     vehicle_ids: List[str]
     from_date: int
     to_date: int

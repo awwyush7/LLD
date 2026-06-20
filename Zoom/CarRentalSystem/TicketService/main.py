@@ -28,7 +28,8 @@ from pydantic import BaseModel, TypeAdapter
 from Zoom.CarRentalSystem.EventHandler.kafka_event_handler import KafkaEventHandler
 from Zoom.CarRentalSystem.Repository.Postgres.db import get_pool, close_pool
 from Zoom.CarRentalSystem.Repository.Postgres.postgres_ticket_repository import PostgresTicketRepository
-from Zoom.EventStreamer.Event.event import BookEvent, AnyEvent
+from Zoom.CarRentalSystem.Repository.Postgres.postgres_payment_intent_repository import PostgresPaymentIntentRepository
+from Zoom.EventStreamer.Event.event import BookEvent, AnyEvent, PaymentSuccessEvent, PaymentFailureEvent
 from Zoom.EventStreamer.Topic.topic import Topic
 from Zoom.CarRentalSystem.metrics import (
     metrics_endpoint,
@@ -43,6 +44,7 @@ KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "ticket-service-group")
 event_handler = KafkaEventHandler(KAFKA_BOOTSTRAP_SERVERS, KAFKA_GROUP_ID)
 adapter = TypeAdapter(AnyEvent)
 ticket_repo: PostgresTicketRepository | None = None
+intent_repo: PostgresPaymentIntentRepository | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -83,11 +85,12 @@ async def ticket_consumer():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ticket_repo
+    global ticket_repo, intent_repo
     await event_handler.start()
     print(f"[TicketService] Connected to Kafka at {KAFKA_BOOTSTRAP_SERVERS}")
     pool = await get_pool()
     ticket_repo = PostgresTicketRepository(pool)
+    intent_repo = PostgresPaymentIntentRepository(pool)
     task = asyncio.create_task(ticket_consumer())
     yield
     task.cancel()
@@ -151,3 +154,67 @@ async def book(req: BookRequest):
 async def get_ticket(booking_id: str):
     ticket = await ticket_repo.get(booking_id)
     return ticket if ticket is not None else {"status": "pending"}
+
+
+@app.get("/payment/status/{booking_id}")
+async def get_payment_status(booking_id: str):
+    """Frontend polls this to get redirect_url and track payment progress."""
+    intent = await intent_repo.get(booking_id)
+    if intent is None:
+        return {"status": "pending"}
+    return {
+        "status": intent["status"],
+        "redirect_url": intent.get("redirect_url"),
+        "failure_reason": intent.get("failure_reason"),
+    }
+
+
+class WebhookPayload(BaseModel):
+    session_id: str
+    booking_id: str
+    status: str
+    reason: str | None = None
+
+
+@app.post("/webhook/payment")
+async def payment_webhook(payload: WebhookPayload):
+    """
+    Called by Stripe (MockStripe in dev) after the user completes or fails payment.
+    Updates the intent status and fires the appropriate event into BookingTopic.
+    """
+    intent = await intent_repo.get(payload.booking_id)
+    if intent is None:
+        return {"error": "unknown booking_id"}
+
+    if payload.status == "paid":
+        await intent_repo.mark_paid(payload.booking_id)
+        await event_handler.add(
+            Topic.BookingTopic,
+            PaymentSuccessEvent(
+                correlation_id=payload.booking_id,
+                booking_id=payload.booking_id,
+                user_id=intent["user_id"],
+                vehicle_ids=intent["vehicle_ids"],
+                from_date=intent["from_date"],
+                to_date=intent["to_date"],
+            ),
+        )
+        print(f"[TicketService] Webhook: payment paid  booking={payload.booking_id[:8]}")
+    else:
+        reason = payload.reason or "Payment failed"
+        await intent_repo.mark_failed(payload.booking_id, reason)
+        await event_handler.add(
+            Topic.BookingTopic,
+            PaymentFailureEvent(
+                correlation_id=payload.booking_id,
+                booking_id=payload.booking_id,
+                user_id=intent["user_id"],
+                vehicle_ids=intent["vehicle_ids"],
+                from_date=intent["from_date"],
+                to_date=intent["to_date"],
+                reason=reason,
+            ),
+        )
+        print(f"[TicketService] Webhook: payment failed  booking={payload.booking_id[:8]}")
+
+    return {"received": True}
