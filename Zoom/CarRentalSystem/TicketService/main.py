@@ -25,7 +25,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, TypeAdapter
 
-from Zoom.CarRentalSystem.EventHandler.event_handler import EventHandler
+from Zoom.CarRentalSystem.EventHandler.kafka_event_handler import KafkaEventHandler
 from Zoom.CarRentalSystem.Repository.Postgres.db import get_pool, close_pool
 from Zoom.CarRentalSystem.Repository.Postgres.postgres_ticket_repository import PostgresTicketRepository
 from Zoom.EventStreamer.Event.event import BookEvent, AnyEvent
@@ -37,9 +37,10 @@ from Zoom.CarRentalSystem.metrics import (
     http_request_duration_seconds,
 )
 
-STREAMER_URL = os.getenv("STREAMER_URL", "http://127.0.0.1:8000")
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "ticket-service-group")
 
-event_handler = EventHandler(STREAMER_URL)
+event_handler = KafkaEventHandler(KAFKA_BOOTSTRAP_SERVERS, KAFKA_GROUP_ID)
 adapter = TypeAdapter(AnyEvent)
 ticket_repo: PostgresTicketRepository | None = None
 
@@ -83,11 +84,14 @@ async def ticket_consumer():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ticket_repo
+    await event_handler.start()
+    print(f"[TicketService] Connected to Kafka at {KAFKA_BOOTSTRAP_SERVERS}")
     pool = await get_pool()
     ticket_repo = PostgresTicketRepository(pool)
     task = asyncio.create_task(ticket_consumer())
     yield
     task.cancel()
+    await event_handler.stop()
     await close_pool()
 
 

@@ -56,6 +56,14 @@ class GenerateTicketEvent(Event):
     from_date: int
     to_date: int
 
+class BookingFailedEvent(Event):
+    type: Literal["booking_failed"] = "booking_failed"
+    booking_id: str
+    user_id: str
+    vehicle_ids: List[str]
+    from_date: int
+    to_date: int
+    reason:str
 
 AnyEvent = Annotated[
     Union[
@@ -64,6 +72,7 @@ AnyEvent = Annotated[
         PaymentSuccessEvent,
         PaymentFailureEvent,
         GenerateTicketEvent,
+        BookingFailedEvent
     ],
     Field(discriminator="type")
 ]
