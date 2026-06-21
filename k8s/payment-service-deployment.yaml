@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+    spec:
+      initContainers:
+        - name: wait-for-event-streamer
+          image: busybox
+          command: ['sh', '-c', 'until nc -z event-streamer 8000; do sleep 2; done']
+      containers:
+        - name: payment-service
+          image: carrental-payment-service:latest
+          imagePullPolicy: Never
+          env:
+            - name: STREAMER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carrental-config
+                  key: STREAMER_URL

@@ -1,0 +1,20 @@
+apiVersion: apps/v1      # which K8s API handles this object type
+kind: Deployment         # what kind of object this is
+metadata:
+  name: event-streamer   # the name of this Deployment object
+spec:
+  replicas: 1            # how many copies of the pod to keep running
+  selector:
+    matchLabels:
+      app: event-streamer  # this Deployment owns pods with this label
+  template:              # blueprint for the pods it creates
+    metadata:
+      labels:
+        app: event-streamer  # pods get this label (must match selector above)
+    spec:
+      containers:
+        - name: event-streamer
+          image: carrental-event-streamer:latest
+          imagePullPolicy: Never   # use locally built image, don't go to Docker Hub
+          ports:
+            - containerPort: 8000

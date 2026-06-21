@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: booking-service
+  template:
+    metadata:
+      labels:
+        app: booking-service
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox
+          # Loops every 2 seconds until postgres accepts TCP connections on 5432
+          # When this exits 0, the main container starts
+          command: ['sh', '-c', 'until nc -z postgres 5432; do echo "waiting for postgres..."; sleep 2; done']
+
+        - name: wait-for-event-streamer
+          image: busybox
+          # Same idea — wait for event-streamer to be reachable
+          command: ['sh', '-c', 'until nc -z event-streamer 8000; do echo "waiting for event-streamer..."; sleep 2; done']
+
+      containers:
+        - name: booking-service
+          image: carrental-booking-service:latest
+          imagePullPolicy: Never
+          env:
+            # Your app reads a single DATABASE_URL, not separate DB_* vars
+            - name: DATABASE_URL
+              value: "postgresql://postgres:Ayush%402002@postgres/carrental"
+            - name: STREAMER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carrental-config
+                  key: STREAMER_URL

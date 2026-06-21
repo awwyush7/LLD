@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carrental-config
+data:
+  # Plain text is fine here — none of this is sensitive
+  DB_NAME: carrental
+  DB_HOST: postgres
+  # kafka:9092 resolves inside the cluster via the kafka Service DNS name
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"

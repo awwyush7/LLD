@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ticket-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ticket-service
+  template:
+    metadata:
+      labels:
+        app: ticket-service
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox
+          command: ['sh', '-c', 'until nc -z postgres 5432; do sleep 2; done']
+        - name: wait-for-event-streamer
+          image: busybox
+          command: ['sh', '-c', 'until nc -z event-streamer 8000; do sleep 2; done']
+      containers:
+        - name: ticket-service
+          image: carrental-ticket-service:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8001
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://postgres:Ayush%402002@postgres/carrental"
+            - name: STREAMER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carrental-config
+                  key: STREAMER_URL

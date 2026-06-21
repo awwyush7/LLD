@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            # Pull non-sensitive config from ConfigMap
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: carrental-config
+                  key: DB_NAME
+            # Pull sensitive values from Secret
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: carrental-secrets
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carrental-secrets
+                  key: DB_PASSWORD
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data  # where postgres stores its files
+          readinessProbe:                          # "is postgres ready to accept connections?"
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "carrental"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 10
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc              # use the PVC we created

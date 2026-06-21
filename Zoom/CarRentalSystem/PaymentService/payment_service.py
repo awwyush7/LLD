@@ -1,21 +1,29 @@
 import httpx
+from redis.asyncio import Redis
 from Zoom.CarRentalSystem.Repository.payment_intent_repository import PaymentIntentRepository
+
+_INTENT_TTL = 86_400  # 24 hours — covers any realistic Kafka retry window
 
 
 class PaymentService:
-    def __init__(self, repo: PaymentIntentRepository, stripe_url: str):
+    def __init__(self, repo: PaymentIntentRepository, stripe_url: str, redis: Redis):
         self._repo = repo
         self._stripe_url = stripe_url
         self._http = httpx.AsyncClient()
+        self._redis = redis
 
     async def process_payment(self, event) -> None:
         """
         Handles PaymentRequestEvent.
-        1. Record intent in DB (idempotent).
-        2. Call Stripe to create a checkout session → get redirect_url.
-        3. Store session info. Done — no event published here.
-        Stripe will call our webhook when the user pays (or fails).
+        Fast idempotency check via Redis before touching Postgres or Stripe.
+        Postgres ON CONFLICT DO NOTHING remains the correctness backstop.
         """
+        redis_key = f"intent:{event.booking_id}"
+
+        if await self._redis.exists(redis_key):
+            print(f"[PaymentService] Duplicate event skipped (Redis hit)  booking={event.booking_id[:8]}")
+            return
+
         await self._repo.create(
             booking_id=event.booking_id,
             user_id=event.user_id,
@@ -41,7 +49,11 @@ class PaymentService:
             stripe_session_id=data["session_id"],
             redirect_url=data["redirect_url"],
         )
+
+        # Mark processed in Redis — future redeliveries short-circuit here
+        await self._redis.set(redis_key, "1", ex=_INTENT_TTL)
         print(f"[PaymentService] Intent awaiting payment  booking={event.booking_id[:8]}")
 
     async def close(self) -> None:
         await self._http.aclose()
+        await self._redis.aclose()

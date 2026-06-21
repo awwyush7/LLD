@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce    # only one node can mount this at a time (correct for Postgres)
+  resources:
+    requests:
+      storage: 1Gi     # ask for 1GB of disk
