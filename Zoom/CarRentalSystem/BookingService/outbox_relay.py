@@ -1,13 +1,15 @@
 import asyncio
 import asyncpg
-from Zoom.CarRentalSystem.EventHandler.event_handler import EventHandler
+from typing import Any
 
 _BATCH_SIZE = 100
 _POLL_INTERVAL = 1.0  # seconds
 
 
 class OutboxRelay:
-    def __init__(self, pool: asyncpg.Pool, event_handler: EventHandler):
+    # event_handler: any object with publish_raw(topic: str, payload: dict)
+    # Works with both KafkaEventHandler and the legacy HTTP EventHandler.
+    def __init__(self, pool: asyncpg.Pool, event_handler: Any):
         self._pool = pool
         self._event_handler = event_handler
 

@@ -1,15 +1,19 @@
 
 """
-TicketService — API Gateway + Ticket Consumer
-Runs on port 8001. Accepts bookings, polls for tickets.
-UI is now served separately from Zoom/CarRentalSystem/Frontend/index.html.
+TicketService — pure consumer + read API (port 8001)
 
-Run from C:\\Learning\\lld_new\\LLD:
-    $env:PYTHONPATH = "C:\\Learning\\lld_new\\LLD"
+Responsibilities after the split:
+  • Consumes TicketTopic from Kafka → writes confirmed/failed rows to tickets table.
+  • GET /ticket/{id}           — browser polls for booking outcome.
+  • GET /payment/status/{id}   — browser polls for payment redirect URL.
+  • POST /webhook/payment      — called by Stripe/MockStripe after payment.
+
+Booking intake has moved to IngestionService (port 8003):
+  POST /booking-intent  →  create intent in Postgres
+  POST /confirm/{id}    →  write to outbox → OutboxRelay → Kafka
+
+Run:
     uvicorn Zoom.CarRentalSystem.TicketService.main:app --port 8001
-
-Requires EventStreamer running on port 8000, BookingService and
-PaymentService workers running separately.
 """
 from dotenv import load_dotenv
 load_dotenv()  # Load .env file before other imports
@@ -17,23 +21,21 @@ load_dotenv()  # Load .env file before other imports
 import asyncio
 import os
 import time
-import uuid
 from contextlib import asynccontextmanager
-from typing import List
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, TypeAdapter
+from typing import List
 
 from Zoom.CarRentalSystem.EventHandler.kafka_event_handler import KafkaEventHandler
 from Zoom.CarRentalSystem.Repository.Postgres.db import get_pool, close_pool
 from Zoom.CarRentalSystem.Repository.Postgres.postgres_ticket_repository import PostgresTicketRepository
 from Zoom.CarRentalSystem.Repository.Postgres.postgres_payment_intent_repository import PostgresPaymentIntentRepository
-from Zoom.EventStreamer.Event.event import BookEvent, AnyEvent, PaymentSuccessEvent, PaymentFailureEvent
+from Zoom.EventStreamer.Event.event import AnyEvent, PaymentSuccessEvent, PaymentFailureEvent
 from Zoom.EventStreamer.Topic.topic import Topic
 from Zoom.CarRentalSystem.metrics import (
     metrics_endpoint,
-    booking_requests_total,
     tickets_confirmed_total,
     http_request_duration_seconds,
 )
@@ -147,58 +149,8 @@ async def track_latency(request: Request, call_next):
 app.add_route("/metrics", metrics_endpoint)
 
 
-# ---------------------------------------------------------------------------
-# REST API
-# ---------------------------------------------------------------------------
-class BookRequest(BaseModel):
-    vehicle_ids: List[str]
-    user_id: str
-    from_date: int
-    to_date: int
-    # Idempotency key: client generates a UUID once per logical booking attempt
-    # and resends the same key on retries.
-    #
-    # Why this matters:
-    #   Without it, each retry generates a fresh UUID → Kafka receives two
-    #   BookEvents for the same seat → two locks acquired → two charges.
-    #   With it, we detect "seen before" and short-circuit before touching Kafka.
-    #
-    # Pattern: client generates key, server uses it as booking_id. On retry
-    # the DB check returns the existing record instead of re-publishing.
-    idempotency_key: str | None = None
 
-
-@app.post("/book")
-async def book(req: BookRequest):
-    booking_id = req.idempotency_key or str(uuid.uuid4())
-
-    # Fast-path: if this booking_id is already in the DB, someone already
-    # processed it (either this request succeeded before or a retry is coming in
-    # after we published to Kafka but before the HTTP response reached the client).
-    # Return the stored status so the client can continue polling /ticket/{id}.
-    existing = await ticket_repo.get(booking_id)
-    if existing is not None:
-        return {"booking_id": booking_id, "status": existing["status"]}
-
-    # send_and_wait + acks="all" + enable_idempotence means:
-    #   • we block until every in-sync Kafka replica has written the message
-    #   • the broker deduplicates any producer-level retries automatically
-    # If we crash between this line and the return below, the event IS in Kafka.
-    # The next retry with the same idempotency_key will hit the existing-check
-    # above once the booking flows through and lands in the DB.
-    await event_handler.add(
-        Topic.BookingTopic,
-        BookEvent(
-            correlation_id=booking_id,
-            vehicle_ids=req.vehicle_ids,
-            user_id=req.user_id,
-            from_date=req.from_date,
-            to_date=req.to_date,
-        ),
-    )
-    booking_requests_total.inc()
-    return {"booking_id": booking_id, "status": "processing"}
-
+# /book has moved to IngestionService (POST /booking-intent + POST /confirm/{id})
 
 @app.get("/ticket/{booking_id}")
 async def get_ticket(booking_id: str):

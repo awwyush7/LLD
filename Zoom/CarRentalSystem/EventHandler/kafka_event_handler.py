@@ -95,6 +95,14 @@ class KafkaEventHandler:
         msg = await self._consumers[topic_str].getone()
         return msg.value
 
+    async def publish_raw(self, topic: str, payload: dict) -> None:
+        """
+        Used by OutboxRelay — publishes a pre-built dict (already the correct
+        event shape) directly to Kafka without going through a Pydantic model.
+        The value_serializer handles JSON encoding.
+        """
+        await self._producer.send_and_wait(topic, payload)
+
     async def commit_offset(self, topic_str: str) -> None:
         """
         Tell Kafka "I have processed everything up to and including the last
