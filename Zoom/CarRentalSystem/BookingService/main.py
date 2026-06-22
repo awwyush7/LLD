@@ -45,7 +45,7 @@ async def main():
     await event_handler.start()
     print(f"[BookingService] Connected to Kafka at {KAFKA_BOOTSTRAP_SERVERS}")
 
-    booking_service = BookingService(booking_repo, event_handler)
+    booking_service = BookingService(booking_repo)
     orchestrator = Orchestrator(booking_service, event_handler)
 
     try:

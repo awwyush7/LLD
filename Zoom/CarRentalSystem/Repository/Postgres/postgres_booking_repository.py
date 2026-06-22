@@ -1,3 +1,4 @@
+import json
 from typing import List
 import asyncpg
 from Zoom.CarRentalSystem.Repository.booking_repository import BookingRepository
@@ -13,24 +14,17 @@ class PostgresBookingRepository(BookingRepository):
         vehicle_ids: List[str],
         from_date: int,
         to_date: int,
+        success_outbox: dict,
+        failure_outbox: dict,
     ) -> bool:
-        """
-        Atomically:
-          1. Lock vehicle rows in sorted order (prevents deadlocks across concurrent requests)
-          2. Check for any conflicting pending/booked slots
-          3. If clean, insert one row per (vehicle, date) as 'pending'
-        Returns True on success, False if any slot is already taken.
-        """
         sorted_ids = sorted(vehicle_ids)
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                # Step 1: acquire row-level locks on vehicles, sorted to prevent deadlocks
                 await conn.fetch(
                     "SELECT id FROM vehicles WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE",
                     sorted_ids,
                 )
 
-                # Step 2: conflict check
                 conflict_count = await conn.fetchval(
                     """
                     SELECT COUNT(*) FROM bookings
@@ -40,19 +34,28 @@ class PostgresBookingRepository(BookingRepository):
                     """,
                     sorted_ids, from_date, to_date,
                 )
+
                 if conflict_count > 0:
+                    # Slots unavailable — write failure event to outbox atomically
+                    await conn.execute(
+                        "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",
+                        failure_outbox["topic"], json.dumps(failure_outbox["payload"]),
+                    )
                     return False
 
-                # Step 3: insert pending rows (one per vehicle per date)
                 rows = [
                     (booking_id, vid, day, "pending")
                     for vid in sorted_ids
                     for day in range(from_date, to_date + 1)
                 ]
                 await conn.executemany(
-                    "INSERT INTO bookings (booking_id, vehicle_id, date, status) "
-                    "VALUES ($1, $2, $3, $4)",
+                    "INSERT INTO bookings (booking_id, vehicle_id, date, status) VALUES ($1, $2, $3, $4)",
                     rows,
+                )
+                # Write success event to outbox in the same transaction
+                await conn.execute(
+                    "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",
+                    success_outbox["topic"], json.dumps(success_outbox["payload"]),
                 )
         return True
 
@@ -62,22 +65,22 @@ class PostgresBookingRepository(BookingRepository):
         vehicle_ids: List[str],
         from_date: int,
         to_date: int,
+        outbox: dict,
     ) -> None:
-        """Transitions pending → booked for all slots belonging to booking_id."""
         sorted_ids = sorted(vehicle_ids)
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                # Lock the same vehicle rows before mutating bookings
                 await conn.fetch(
                     "SELECT id FROM vehicles WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE",
                     sorted_ids,
                 )
                 await conn.execute(
-                    """
-                    UPDATE bookings SET status = 'booked'
-                    WHERE booking_id = $1
-                    """,
+                    "UPDATE bookings SET status = 'booked' WHERE booking_id = $1",
                     booking_id,
+                )
+                await conn.execute(
+                    "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",
+                    outbox["topic"], json.dumps(outbox["payload"]),
                 )
 
     async def remove_booking(
@@ -87,7 +90,6 @@ class PostgresBookingRepository(BookingRepository):
         from_date: int,
         to_date: int,
     ) -> None:
-        """Removes all pending slots for booking_id (payment failure / cancel)."""
         sorted_ids = sorted(vehicle_ids)
         async with self._pool.acquire() as conn:
             async with conn.transaction():
