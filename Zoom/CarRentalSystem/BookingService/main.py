@@ -7,6 +7,7 @@ import os
 from Zoom.CarRentalSystem.EventHandler.kafka_event_handler import KafkaEventHandler
 from Zoom.CarRentalSystem.BookingService.booking_service import BookingService
 from Zoom.CarRentalSystem.BookingService.orchestrator import Orchestrator
+from Zoom.CarRentalSystem.BookingService.outbox_relay import OutboxRelay
 from Zoom.CarRentalSystem.Repository.Postgres.db import get_pool, close_pool
 from Zoom.CarRentalSystem.Repository.Postgres.postgres_vehicle_repository import PostgresVehicleRepository
 from Zoom.CarRentalSystem.Repository.Postgres.postgres_booking_repository import PostgresBookingRepository
@@ -24,12 +25,17 @@ _SEED_VEHICLES = [
 ]
 
 
-async def start(orchestrator: Orchestrator):
+async def start(orchestrator: Orchestrator, event_handler: KafkaEventHandler):
     print("[BookingService] Listening on BookingTopic...")
     asyncio.create_task(start_metrics_server(METRICS_PORT))
     while True:
-        raw_event = await orchestrator.get_task(Topic.BookingTopic.value)
-        asyncio.create_task(orchestrator.process(raw_event))
+        # process_with_dlq: retry up to 3 times with exponential backoff,
+        # then dead-letter the message so the partition is never blocked.
+        await event_handler.process_with_dlq(
+            Topic.BookingTopic.value,
+            Topic.BookingTopicDLQ.value,
+            orchestrator.process,
+        )
 
 
 async def main():
@@ -48,9 +54,16 @@ async def main():
     booking_service = BookingService(booking_repo)
     orchestrator = Orchestrator(booking_service, event_handler)
 
+    # BookingService writes PaymentRequestEvent / GenerateTicketEvent /
+    # BookingFailedEvent into the outbox table atomically with the DB change.
+    # This relay reads those rows and publishes them to Kafka.
+    # Without it, every outbox row written here sits unpublished forever.
+    relay_task = asyncio.create_task(OutboxRelay(pool, event_handler).run())
+
     try:
-        await start(orchestrator)
+        await start(orchestrator, event_handler)
     finally:
+        relay_task.cancel()
         await event_handler.stop()
         await close_pool()
 

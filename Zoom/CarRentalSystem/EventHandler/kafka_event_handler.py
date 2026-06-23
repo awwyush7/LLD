@@ -1,3 +1,4 @@
+import asyncio
 import json
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 
@@ -102,6 +103,58 @@ class KafkaEventHandler:
         The value_serializer handles JSON encoding.
         """
         await self._producer.send_and_wait(topic, payload)
+
+    async def process_with_dlq(
+        self,
+        topic_str: str,
+        dlq_topic_str: str,
+        handler,
+        max_retries: int = 3,
+    ) -> None:
+        """
+        Reads one message from topic_str, runs handler(raw_dict).
+
+        Why this exists — the poison-pill problem:
+          Without a DLQ, a malformed or persistently-failing message causes the
+          consumer to retry forever, blocking every message behind it in that
+          partition. Nothing processes until someone manually intervenes.
+
+        What this does instead:
+          Attempt 1      → handler fails → wait 1s
+          Attempt 2      → handler fails → wait 2s
+          Attempt 3      → handler fails → publish to DLQ + commit offset → move on
+          Attempt N (ok) → commit offset → done
+
+        The DLQ topic holds the original payload + error for ops to inspect and
+        replay once the underlying bug is fixed. The live partition is never blocked.
+
+        Exponential backoff (1s, 2s, 4s…) handles transient failures (DB blip,
+        downstream timeout) without hammering a struggling dependency.
+        """
+        raw = await self.get_tasks(topic_str)
+        last_exc: Exception | None = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                await handler(raw)
+                await self.commit_offset(topic_str)
+                return
+            except Exception as exc:
+                last_exc = exc
+                wait = 2 ** (attempt - 1)   # 1s, 2s, 4s
+                print(f"[DLQ] {topic_str} attempt {attempt}/{max_retries} failed: {exc}"
+                      + (f" — retrying in {wait}s" if attempt < max_retries else ""))
+                if attempt < max_retries:
+                    await asyncio.sleep(wait)
+
+        # All retries exhausted — dead-letter the message.
+        await self.publish_raw(dlq_topic_str, {
+            "original_topic": topic_str,
+            "error": str(last_exc),
+            "payload": raw,
+        })
+        await self.commit_offset(topic_str)
+        print(f"[DLQ] Moved to {dlq_topic_str}  error={last_exc}")
 
     async def commit_offset(self, topic_str: str) -> None:
         """

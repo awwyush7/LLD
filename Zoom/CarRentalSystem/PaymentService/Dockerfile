@@ -11,6 +11,7 @@ COPY . .
 
 # Set PYTHONPATH so imports work
 ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
 
 # Run PaymentService
 CMD ["python", "-m", "Zoom.CarRentalSystem.PaymentService.main"]

@@ -30,13 +30,19 @@ async def start():
     payment_service = PaymentService(intent_repo, STRIPE_URL, redis)
     adapter = TypeAdapter(AnyEvent)
 
+    async def handle(raw: dict) -> None:
+        event = adapter.validate_python(raw)
+        print(f"[PaymentService] Got {event.type}  booking={event.booking_id[:8]}")
+        await payment_service.process_payment(event)
+
     print(f"[PaymentService] Listening on {Topic.PaymentTopic.value}...")
     try:
         while True:
-            raw = await event_handler.get_tasks(Topic.PaymentTopic.value)
-            event = adapter.validate_python(raw)
-            print(f"[PaymentService] Got {event.type}  booking={event.booking_id[:8]}")
-            asyncio.create_task(payment_service.process_payment(event))
+            await event_handler.process_with_dlq(
+                Topic.PaymentTopic.value,
+                Topic.PaymentTopicDLQ.value,
+                handle,
+            )
     finally:
         await payment_service.close()
         await event_handler.stop()

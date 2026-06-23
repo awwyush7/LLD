@@ -52,61 +52,45 @@ intent_repo: PostgresPaymentIntentRepository | None = None
 # ---------------------------------------------------------------------------
 # Background consumer — listens on TicketTopic, writes confirmed tickets to DB
 # ---------------------------------------------------------------------------
+async def _handle_ticket_event(raw: dict) -> None:
+    """Handler passed to process_with_dlq — processes one TicketTopic message."""
+    event = adapter.validate_python(raw)
+    if event.type == "generate_ticket":
+        print(f"[TicketService] Ticket confirmed  booking={event.booking_id[:8]}")
+        await ticket_repo.save(
+            booking_id=event.booking_id,
+            user_id=event.user_id,
+            vehicle_ids=event.vehicle_ids,
+            from_date=event.from_date,
+            to_date=event.to_date,
+            status="confirmed",
+        )
+        tickets_confirmed_total.inc()
+    elif event.type == "booking_failed":
+        print(f"[TicketService] Booking failed  booking={event.booking_id[:8]} reason={event.reason}")
+        await ticket_repo.save(
+            booking_id=event.booking_id,
+            user_id=event.user_id,
+            vehicle_ids=event.vehicle_ids,
+            from_date=event.from_date,
+            to_date=event.to_date,
+            status="failed",
+            reason=event.reason,
+        )
+
+
 async def ticket_consumer():
-    # Kafka offset commit strategy used here: "at-least-once delivery"
-    #
-    # Timeline of a single message:
-    #   1. getone()       → Kafka hands us the message; offset NOT advanced yet
-    #   2. DB save        → side-effect committed to Postgres
-    #   3. commit_offset  → Kafka advances the offset; message considered "done"
-    #
-    # If we crash between step 1 and step 3, Kafka redelivers the message on
-    # reconnect. The DB INSERT … ON CONFLICT DO NOTHING absorbs the duplicate
-    # write safely — this is what makes at-least-once tolerable in practice.
-    #
-    # The alternative is "exactly-once" via Kafka transactions, but that
-    # requires the DB write and offset commit to be in a single atomic
-    # transaction — only possible with the Kafka Streams API or a transactional
-    # producer, not straightforward with asyncpg + aiokafka.
     print("[TicketService] Listening on TicketTopic...")
     while True:
-        try:
-            raw = await event_handler.get_tasks(Topic.TicketTopic.value)
-            event = adapter.validate_python(raw)
-
-            if event.type == "generate_ticket":
-                print(f"[TicketService] Ticket confirmed  booking={event.booking_id[:8]}")
-                await ticket_repo.save(
-                    booking_id=event.booking_id,
-                    user_id=event.user_id,
-                    vehicle_ids=event.vehicle_ids,
-                    from_date=event.from_date,
-                    to_date=event.to_date,
-                    status="confirmed",
-                )
-                tickets_confirmed_total.inc()
-            elif event.type == "booking_failed":
-                print(f"[TicketService] Booking failed  booking={event.booking_id[:8]} reason={event.reason}")
-                await ticket_repo.save(
-                    booking_id=event.booking_id,
-                    user_id=event.user_id,
-                    vehicle_ids=event.vehicle_ids,
-                    from_date=event.from_date,
-                    to_date=event.to_date,
-                    status="failed",
-                    reason=event.reason,
-                )
-
-            # Only reach here if the DB write succeeded.
-            # Committing now tells Kafka: "even if I crash and restart,
-            # don't redeliver this message — I already handled it."
-            await event_handler.commit_offset(Topic.TicketTopic.value)
-
-        except Exception as exc:
-            # We deliberately do NOT commit on error.
-            # Kafka will redeliver this message on the next getone() call,
-            # giving us a chance to retry the DB write.
-            print(f"[TicketService] consumer error: {exc}")
+        # Retry up to 3 times with exponential backoff.
+        # On permanent failure, message goes to TicketTopicDLQ so the partition
+        # is never blocked. DB is idempotent (ON CONFLICT DO NOTHING), so
+        # redeliveries after a transient failure are absorbed safely.
+        await event_handler.process_with_dlq(
+            Topic.TicketTopic.value,
+            Topic.TicketTopicDLQ.value,
+            _handle_ticket_event,
+        )
 
 
 @asynccontextmanager
