@@ -2,18 +2,40 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: carrental-ingress
+  annotations:
+    # Rate limiting via nginx-ingress-controller annotations.
+    # These apply globally to this Ingress (per-path limits require separate Ingress objects).
+    # 5 req/s for write paths is enforced at nginx level before hitting any service.
+    nginx.ingress.kubernetes.io/limit-rps: "30"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
 spec:
+  ingressClassName: nginx
   rules:
     - http:
         paths:
-          # API routes — must be listed before / so they match first
-          - path: /book
+          # ------------------------------------------------------------------
+          # IngestionService — write path (booking intake)
+          # Listed before / so they match first (Prefix matching is longest-match)
+          # ------------------------------------------------------------------
+          - path: /booking-intent
             pathType: Prefix
             backend:
               service:
-                name: ticket-service
+                name: ingestion-service
                 port:
-                  number: 8001
+                  number: 8003
+
+          - path: /confirm
+            pathType: Prefix
+            backend:
+              service:
+                name: ingestion-service
+                port:
+                  number: 8003
+
+          # ------------------------------------------------------------------
+          # TicketService — read path (polling + webhook)
+          # ------------------------------------------------------------------
           - path: /ticket
             pathType: Prefix
             backend:
@@ -21,7 +43,26 @@ spec:
                 name: ticket-service
                 port:
                   number: 8001
-          # Everything else (/, /assets, etc) goes to the React frontend
+
+          - path: /payment
+            pathType: Prefix
+            backend:
+              service:
+                name: ticket-service
+                port:
+                  number: 8001
+
+          - path: /webhook
+            pathType: Prefix
+            backend:
+              service:
+                name: ticket-service
+                port:
+                  number: 8001
+
+          # ------------------------------------------------------------------
+          # Frontend — everything else (static assets, SPA routes)
+          # ------------------------------------------------------------------
           - path: /
             pathType: Prefix
             backend:

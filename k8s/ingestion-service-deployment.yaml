@@ -1,31 +1,31 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: booking-service
+  name: ingestion-service
 spec:
-  replicas: 1
+  replicas: 2   # stateless — safe to run multiple replicas; FOR UPDATE SKIP LOCKED
+                # in OutboxRelay ensures two replicas never publish the same row
   selector:
     matchLabels:
-      app: booking-service
+      app: ingestion-service
   template:
     metadata:
       labels:
-        app: booking-service
+        app: ingestion-service
     spec:
       initContainers:
         - name: wait-for-postgres
           image: busybox
-          # Loops every 2 seconds until postgres accepts TCP connections on 5432
-          command: ['sh', '-c', 'until nc -z postgres 5432; do echo "waiting for postgres..."; sleep 2; done']
-
+          command: ['sh', '-c', 'until nc -z postgres 5432; do sleep 2; done']
         - name: wait-for-kafka
           image: busybox
           command: ['sh', '-c', 'until nc -z kafka 9092; do echo "waiting for kafka..."; sleep 2; done; echo "Kafka port open — waiting for broker ready..."; sleep 10']
-
       containers:
-        - name: booking-service
-          image: carrental-booking-service:latest
+        - name: ingestion-service
+          image: carrental-ingestion-service:latest
           imagePullPolicy: Never
+          ports:
+            - containerPort: 8003
           env:
             - name: DATABASE_URL
               value: "postgresql://postgres:Ayush%402002@postgres/carrental"
@@ -35,4 +35,10 @@ spec:
                   name: carrental-config
                   key: KAFKA_BOOTSTRAP_SERVERS
             - name: KAFKA_GROUP_ID
-              value: "booking-service-group"
+              value: "ingestion-service-group"
+          readinessProbe:
+            httpGet:
+              path: /docs   # FastAPI's built-in docs endpoint — returns 200 when ready
+              port: 8003
+            initialDelaySeconds: 10
+            periodSeconds: 5

@@ -13,16 +13,27 @@ spec:
         app: payment-service
     spec:
       initContainers:
-        - name: wait-for-event-streamer
+        - name: wait-for-postgres
           image: busybox
-          command: ['sh', '-c', 'until nc -z event-streamer 8000; do sleep 2; done']
+          command: ['sh', '-c', 'until nc -z postgres 5432; do echo "waiting for postgres..."; sleep 2; done']
+        - name: wait-for-kafka
+          image: busybox
+          command: ['sh', '-c', 'until nc -z kafka 9092; do echo "waiting for kafka..."; sleep 2; done; echo "Kafka port open — waiting for broker ready..."; sleep 10']
       containers:
         - name: payment-service
           image: carrental-payment-service:latest
           imagePullPolicy: Never
           env:
-            - name: STREAMER_URL
+            - name: DATABASE_URL
+              value: "postgresql://postgres:Ayush%402002@postgres/carrental"
+            - name: KAFKA_BOOTSTRAP_SERVERS
               valueFrom:
                 configMapKeyRef:
                   name: carrental-config
-                  key: STREAMER_URL
+                  key: KAFKA_BOOTSTRAP_SERVERS
+            - name: KAFKA_GROUP_ID
+              value: "payment-service-group"
+            - name: STRIPE_URL
+              value: "http://mock-stripe:8004"
+            - name: REDIS_URL
+              value: "redis://redis:6379"

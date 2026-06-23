@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-stripe
+spec:
+  selector:
+    app: mock-stripe
+  ports:
+    - port: 8004
+      targetPort: 8004
+  type: ClusterIP   # internal only — PaymentService calls it directly

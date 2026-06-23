@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-stripe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-stripe
+  template:
+    metadata:
+      labels:
+        app: mock-stripe
+    spec:
+      containers:
+        - name: mock-stripe
+          image: carrental-mock-stripe:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8004
+          env:
+            # Webhook fires back to ticket-service via ClusterIP — no ingress hop needed
+            - name: WEBHOOK_URL
+              value: "http://ticket-service:8001/webhook/payment"
+            - name: SELF_URL
+              value: "http://mock-stripe:8004"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 5
+            periodSeconds: 5
