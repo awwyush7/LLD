@@ -31,6 +31,22 @@ CREATE TABLE IF NOT EXISTS tickets (
     reason      TEXT        NULL
 );
 
+CREATE TABLE IF NOT EXISTS outbox (
+    id               BIGSERIAL   PRIMARY KEY,
+    topic            TEXT        NOT NULL,
+    payload          JSONB       NOT NULL,
+    published        BOOLEAN     NOT NULL DEFAULT false,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Optional idempotency key. IngestionService sets this to booking_id so that
+    -- a retried POST /confirm with the same booking_id hits ON CONFLICT DO NOTHING
+    -- and never inserts a second outbox row. NULL rows (from other writers) are
+    -- each treated as distinct by Postgres UNIQUE — NULLs never conflict.
+    idempotency_key  TEXT        UNIQUE
+);
+
+-- Partial index so the relay only scans unpublished rows
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON outbox(id) WHERE published = false;
+
 CREATE TABLE IF NOT EXISTS payment_intents (
     booking_id          TEXT        PRIMARY KEY,
     user_id             TEXT        NOT NULL,

@@ -4,3 +4,5 @@ httpx
 asyncpg
 pydantic
 python-dotenv
+aiokafka
+redis[asyncio]
