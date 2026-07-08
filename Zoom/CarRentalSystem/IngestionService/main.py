@@ -1,24 +1,27 @@
 """
 IngestionService — stateless HTTP entry point for booking requests (port 8003).
 
-Two-step flow (client carries the state between steps):
+Idempotency-Key flow (Stripe-style):
 
-  Step 1  POST /booking-intent
-          Pure UUID factory. No DB, no Kafka. Just returns a booking_id.
-          Client stores this ID and uses it for step 2.
-          If the response never arrives → client retries → gets a new UUID → fine,
-          because no state was written anywhere. The old UUID is simply never used.
+  The CLIENT generates a UUID before making the request and sends it as:
+      Idempotency-Key: <client-uuid>
 
-  Step 2  POST /confirm/{booking_id}
-          Client sends the full booking payload. One DB write: INSERT INTO outbox
-          with idempotency_key = booking_id and ON CONFLICT DO NOTHING.
-          • First call   → row inserted → OutboxRelay picks it up → Kafka → done.
-          • Retry / dup  → ON CONFLICT → row already there → silently ignored → 202.
-          Crash before INSERT commits → transaction rolls back → retry inserts again.
-          Crash after INSERT commits  → retry hits ON CONFLICT → idempotent.
+  This key is used as both the booking_id and the outbox idempotency_key.
+
+  POST /confirm
+      • First call with key  → INSERT into outbox → relay picks it up → Kafka → done.
+      • Retry with same key  → ON CONFLICT DO NOTHING → silently ignored → 202.
+      • Crash before INSERT commits → transaction rolls back → retry inserts cleanly.
+      • Crash after INSERT commits  → retry hits ON CONFLICT → idempotent.
+
+  Why the client generates the key (not the server):
+      If the server generated the key and the response never reached the client,
+      the client has no key to retry with — it would send a new request, get a new
+      key, and create a duplicate. With a client-generated key the client always
+      knows the key before the first call, so every retry is identical.
 
   OutboxRelay (background task)
-          Polls outbox for unpublished rows → publishes to Kafka → marks published.
+      Polls outbox for unpublished rows → publishes to Kafka → marks published.
 
 Run:
     uvicorn Zoom.CarRentalSystem.IngestionService.main:app --port 8003
@@ -29,11 +32,10 @@ load_dotenv()
 import asyncio
 import json
 import os
-import uuid
 from contextlib import asynccontextmanager
 from typing import List
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -69,26 +71,6 @@ app = FastAPI(title="IngestionService", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-# ---------------------------------------------------------------------------
-# Step 1 — stateless UUID factory
-# ---------------------------------------------------------------------------
-@app.post("/booking-intent", status_code=200)
-async def create_booking_intent():
-    """
-    Returns a fresh booking_id. No DB write, no Kafka.
-
-    Why no DB here:
-    If we wrote to DB and the response never reached the client, the client
-    would retry and create another row — orphaned garbage. Since there is no
-    state to write at this point (we don't know if the user will confirm),
-    the correct thing is to write nothing and let the client carry the ID.
-    """
-    return {"booking_id": str(uuid.uuid4())}
-
-
-# ---------------------------------------------------------------------------
-# Step 2 — durable confirm
-# ---------------------------------------------------------------------------
 class ConfirmRequest(BaseModel):
     user_id:     str
     vehicle_ids: List[str]
@@ -96,18 +78,24 @@ class ConfirmRequest(BaseModel):
     to_date:     int
 
 
-@app.post("/confirm/{booking_id}", status_code=202)
-async def confirm_booking(booking_id: str, req: ConfirmRequest):
+@app.post("/confirm", status_code=202)
+async def confirm_booking(
+    req: ConfirmRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+):
     """
-    Single INSERT into outbox. That's the only side-effect in the entire system
-    for this request — everything downstream (Kafka, BookingService, payment,
-    ticket) is driven by the OutboxRelay reading this one row.
+    Client must generate a UUID and send it as the Idempotency-Key header.
+    The same key must be used on every retry for this booking attempt.
+    The key becomes the booking_id for the entire downstream flow.
 
-    ON CONFLICT (idempotency_key) DO NOTHING means:
-    - First call with this booking_id → row written → relay picks it up.
-    - Any retry             → conflict → row silently skipped → 202 returned.
-    No locks, no extra SELECT, no confirmed-flag dance needed.
+    ON CONFLICT (idempotency_key) DO NOTHING makes this endpoint safe to
+    call any number of times — only the first committed INSERT has any effect.
     """
+    if not idempotency_key:
+        raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
+
+    booking_id = idempotency_key
+
     event = BookEvent(
         correlation_id=booking_id,
         vehicle_ids=req.vehicle_ids,
@@ -124,6 +112,6 @@ async def confirm_booking(booking_id: str, req: ConfirmRequest):
             """,
             Topic.BookingTopic.value,
             json.dumps(event.model_dump(mode="json")),
-            booking_id,
+            idempotency_key,
         )
     return {"booking_id": booking_id, "status": "processing"}
