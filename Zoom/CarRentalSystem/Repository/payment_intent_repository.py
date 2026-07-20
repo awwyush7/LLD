@@ -9,9 +9,7 @@ class PaymentIntentRepository(ABC):
         booking_id: str,
         user_id: str,
         amount: float,
-        vehicle_ids: List[str],
-        from_date: int,
-        to_date: int,
+        vehicles: List[dict],    # List of {vehicle_id, from_date, to_date}
     ) -> None:
         """Insert a new intent row with status 'pending'. No-op if booking_id already exists."""
 

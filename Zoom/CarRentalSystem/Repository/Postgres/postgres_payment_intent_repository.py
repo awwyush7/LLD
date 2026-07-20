@@ -13,20 +13,17 @@ class PostgresPaymentIntentRepository(PaymentIntentRepository):
         booking_id: str,
         user_id: str,
         amount: float,
-        vehicle_ids: List[str],
-        from_date: int,
-        to_date: int,
+        vehicles: List[dict],    # [{vehicle_id, from_date, to_date}, ...]
     ) -> None:
-        """Idempotent — ON CONFLICT DO NOTHING guards against event redelivery."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO payment_intents
-                    (booking_id, user_id, amount, vehicle_ids, from_date, to_date, status)
-                VALUES ($1, $2, $3, $4::jsonb, $5, $6, 'pending')
+                    (booking_id, user_id, amount, vehicles, status)
+                VALUES ($1, $2, $3, $4::jsonb, 'pending')
                 ON CONFLICT (booking_id) DO NOTHING
                 """,
-                booking_id, user_id, amount, json.dumps(vehicle_ids), from_date, to_date,
+                booking_id, user_id, amount, json.dumps(vehicles),
             )
 
     async def mark_awaiting_payment(
@@ -54,7 +51,7 @@ class PostgresPaymentIntentRepository(PaymentIntentRepository):
                 """
                 UPDATE payment_intents
                 SET status = 'paid', updated_at = now()
-                WHERE booking_id = $1
+                WHERE booking_id = $1 AND status = 'awaiting_payment'
                 """,
                 booking_id,
             )
@@ -65,7 +62,7 @@ class PostgresPaymentIntentRepository(PaymentIntentRepository):
                 """
                 UPDATE payment_intents
                 SET status = 'failed', failure_reason = $2, updated_at = now()
-                WHERE booking_id = $1
+                WHERE booking_id = $1 AND status = 'awaiting_payment'
                 """,
                 booking_id, reason,
             )
@@ -74,7 +71,7 @@ class PostgresPaymentIntentRepository(PaymentIntentRepository):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT booking_id, user_id, amount, vehicle_ids, from_date, to_date,
+                SELECT booking_id, user_id, amount, vehicles,
                        status, stripe_session_id, redirect_url, failure_reason
                 FROM payment_intents WHERE booking_id = $1
                 """,
@@ -83,5 +80,5 @@ class PostgresPaymentIntentRepository(PaymentIntentRepository):
         if row is None:
             return None
         result = dict(row)
-        result["vehicle_ids"] = json.loads(result["vehicle_ids"])
+        result["vehicles"] = json.loads(result["vehicles"])
         return result

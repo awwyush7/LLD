@@ -55,6 +55,14 @@ class KafkaEventHandler:
             acks="all",
             # Broker deduplicates retries using sequence numbers.
             enable_idempotence=True,
+            # Batching: when many send()/send_and_wait() calls are in flight at
+            # once (e.g. OutboxRelay publishing a batch concurrently via
+            # asyncio.gather), the producer holds each partition's messages for
+            # up to linger_ms waiting to see if more arrive, then ships them as
+            # ONE produce request instead of one network round trip per message.
+            # Caps at max_batch_size bytes even if linger_ms hasn't elapsed yet.
+            linger_ms=10,
+            max_batch_size=64 * 1024,
         )
         await self._producer.start()
 

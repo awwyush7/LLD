@@ -113,12 +113,31 @@ event_processing_duration_seconds = registry.register(Histogram(
 payments_processed_total = registry.register(Counter(
     name="payments_processed_total",
     help="Total payment attempts processed",
-    label_names=("result",),   # success | failure
+    label_names=("result",),   # initiated | error
 ))
 
 payment_duration_seconds = registry.register(Histogram(
     name="payment_duration_seconds",
     help="Time spent processing a payment (seconds)",
+))
+
+# ---------------------------------------------------------------------------
+# IngestionService / OutboxRelay metrics
+# ---------------------------------------------------------------------------
+ingestion_confirms_total = registry.register(Counter(
+    name="ingestion_confirms_total",
+    help="Total POST /confirm requests accepted into the outbox",
+))
+
+outbox_relay_published_total = registry.register(Counter(
+    name="outbox_relay_published_total",
+    help="Total outbox rows this process's relay has published to Kafka",
+))
+
+outbox_relay_batch_size = registry.register(Histogram(
+    name="outbox_relay_batch_size",
+    help="Number of rows published per relay poll cycle",
+    buckets=(0, 1, 5, 10, 25, 50, 100, 250, 500),
 ))
 
 

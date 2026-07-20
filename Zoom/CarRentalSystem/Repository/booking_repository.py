@@ -7,23 +7,19 @@ class BookingRepository(ABC):
     async def mark_pending(
         self,
         booking_id: str,
-        vehicle_ids: List[str],
-        from_date: int,
-        to_date: int,
-        success_outbox: dict,   # {topic, payload} written to outbox on success
-        failure_outbox: dict,   # {topic, payload} written to outbox on conflict
+        vehicles: List[tuple],   # List of (vehicle_id, from_date, to_date)
+        success_outbox: dict,
+        failure_outbox: dict,
     ) -> bool:
-        """Atomically checks availability, marks slots pending, and writes one outbox event.
+        """Atomically checks per-vehicle availability, marks slots pending, writes outbox event.
         Returns True if successful, False if any slot is already taken."""
 
     @abstractmethod
     async def confirm_booking(
         self,
         booking_id: str,
-        vehicle_ids: List[str],
-        from_date: int,
-        to_date: int,
-        outbox: dict,           # {topic, payload} written to outbox atomically
+        vehicle_ids: List[str],  # IDs only needed for row-level locking
+        outbox: dict,
     ) -> None:
         """Transitions all pending slots to booked and writes one outbox event."""
 
@@ -31,8 +27,6 @@ class BookingRepository(ABC):
     async def remove_booking(
         self,
         booking_id: str,
-        vehicle_ids: List[str],
-        from_date: int,
-        to_date: int,
+        vehicle_ids: List[str],  # IDs only needed for row-level locking
     ) -> None:
-        """Removes all pending slots for booking_id. Terminal action — no outbox event."""
+        """Removes all pending slots for booking_id. Terminal — no outbox event."""

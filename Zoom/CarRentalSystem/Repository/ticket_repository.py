@@ -8,13 +8,11 @@ class TicketRepository(ABC):
         self,
         booking_id: str,
         user_id: str,
-        vehicle_ids: List[str],
-        from_date: int,
-        to_date: int,
+        vehicles: List[dict],    # [{vehicle_id, from_date, to_date}, ...]
         status: str = "confirmed",
         reason: Optional[str] = None,
     ) -> None:
-        """Persist a ticket (confirmed or failed). Idempotent on duplicate booking_id."""
+        """Persist a ticket. Idempotent on duplicate booking_id."""
 
     @abstractmethod
     async def get(self, booking_id: str) -> Optional[dict]:
