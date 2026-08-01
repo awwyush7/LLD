@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+spec:
+  replicas: 2   # stateless proxy — safe to run more than one in front of the same primary
+  selector:
+    matchLabels:
+      app: pgbouncer
+  template:
+    metadata:
+      labels:
+        app: pgbouncer
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox
+          command: ['sh', '-c', 'until nc -z postgres 5432; do sleep 2; done']
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:1.21.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6432
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: carrental-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carrental-secrets
+                  key: DB_PASSWORD
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "32Mi"
+            limits:
+              cpu: "300m"
+              memory: "64Mi"
+          volumeMounts:
+            - name: pgbouncer-config
+              mountPath: /etc/pgbouncer/pgbouncer.ini
+              subPath: pgbouncer.ini
+            - name: pgbouncer-secret
+              mountPath: /etc/pgbouncer/userlist.txt
+              subPath: userlist.txt
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: pgbouncer-config
+          configMap:
+            name: pgbouncer-config
+        - name: pgbouncer-secret
+          secret:
+            secretName: pgbouncer-secret

@@ -1,9 +1,25 @@
+# NOTE: this is now a StatefulSet, not a Deployment (filename kept as
+# kafka-deployment.yaml so existing kubectl apply / rebuild scripts still work).
+#
+# Why StatefulSet instead of Deployment:
+#   A KRaft cluster needs each broker to have (a) a unique, stable KAFKA_NODE_ID,
+#   and (b) a DNS name other brokers and clients can always reach it at, even
+#   after a restart. A Deployment's pods get random suffixes and random IPs on
+#   every reschedule — there's no way to derive a stable node ID or listener
+#   address from them. A StatefulSet gives every pod a fixed name (kafka-0,
+#   kafka-1, kafka-2) that survives restarts, and combined with the headless
+#   Service (kafka-headless-service.yaml) each pod gets a stable DNS name:
+#   kafka-0.kafka-headless, kafka-1.kafka-headless, kafka-2.kafka-headless.
+#   The command below derives KAFKA_NODE_ID and KAFKA_ADVERTISED_LISTENERS from
+#   that pod ordinal at container start.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: kafka
 spec:
-  replicas: 1
+  serviceName: kafka-headless
+  replicas: 3
+  podManagementPolicy: Parallel   # bring all 3 up together — KRaft quorum needs a majority to elect a leader anyway
   selector:
     matchLabels:
       app: kafka
@@ -19,44 +35,77 @@ spec:
           ports:
             - containerPort: 9092   # client port — services connect here
             - containerPort: 9093   # controller port — internal KRaft raft
+          # Derive this pod's ordinal (kafka-0 -> 0, kafka-1 -> 1, ...) from
+          # $HOSTNAME (StatefulSet pod names are always <statefulset>-<ordinal>),
+          # then compute the one-indexed KAFKA_NODE_ID and this pod's own
+          # advertised address before handing off to the image's normal startup.
+          command:
+            - sh
+            - -c
+            - |
+              ORDINAL=$(echo "$HOSTNAME" | rev | cut -d'-' -f1 | rev)
+              export KAFKA_NODE_ID=$((ORDINAL + 1))
+              export KAFKA_ADVERTISED_LISTENERS="PLAINTEXT://${HOSTNAME}.kafka-headless:9092"
+              exec /etc/kafka/docker/run
           env:
-            # KRaft: this single node is both broker and controller (no Zookeeper)
-            - name: KAFKA_NODE_ID
-              value: "1"
             - name: KAFKA_PROCESS_ROLES
               value: "broker,controller"
 
             # Two listeners: PLAINTEXT for clients, CONTROLLER for KRaft election
             - name: KAFKA_LISTENERS
               value: "PLAINTEXT://:9092,CONTROLLER://:9093"
-            - name: KAFKA_ADVERTISED_LISTENERS
-              value: "PLAINTEXT://kafka:9092"
             - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
               value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
 
-            # KRaft quorum — single node, controller runs on localhost inside the pod
+            # KRaft quorum — all 3 brokers are also controllers (combined mode)
+            # and vote on the controller leader among themselves via their
+            # stable headless-Service DNS names.
             - name: KAFKA_CONTROLLER_QUORUM_VOTERS
-              value: "1@localhost:9093"
+              value: "1@kafka-0.kafka-headless:9093,2@kafka-1.kafka-headless:9093,3@kafka-2.kafka-headless:9093"
             - name: KAFKA_CONTROLLER_LISTENER_NAMES
               value: "CONTROLLER"
 
-            # Fixed cluster ID required by KRaft (base64-encoded UUID)
+            # Fixed cluster ID required by KRaft (base64-encoded UUID) — must be
+            # identical across all 3 brokers so they agree they're one cluster.
             - name: CLUSTER_ID
               value: "MkU3OEVBNTcwNTJENDM2Qk"
 
-            # Auto-create topics on first produce/consume — no manual setup needed
             - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
               value: "true"
 
-            # Single-replica settings required for a 1-node cluster
+            # 8 partitions → 8 consumers per group can run in parallel.
+            # Matches replica count of booking-service and payment-service.
+            - name: KAFKA_NUM_PARTITIONS
+              value: "8"
+
+            # Now that there are 3 brokers, every topic is actually replicated —
+            # data survives a single broker crash instead of being lost with it.
+            # min.insync.replicas=2 is what makes acks="all" (kafka_event_handler.py)
+            # mean something: a produce only succeeds once 2 of the 3 replicas have
+            # the message, so losing any ONE broker never loses acknowledged data.
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "3"
             - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
-              value: "1"
+              value: "3"
             - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
-              value: "1"
+              value: "3"
             - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
-              value: "1"
+              value: "2"
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: "2"
             - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
               value: "0"
+
+            # Cap the JVM heap so Kafka fits inside the memory limit.
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xmx384m -Xms128m"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "896Mi"
           readinessProbe:
             tcpSocket:
               port: 9092
@@ -68,4 +117,4 @@ spec:
               mountPath: /var/lib/kafka/data   # apache/kafka stores logs here
       volumes:
         - name: kafka-data
-          emptyDir: {}   # ephemeral — messages lost on pod restart (fine for learning)
+          emptyDir: {}   # ephemeral — messages lost if ALL 3 brokers holding a partition's replicas restart together (fine for learning; a real cluster would use PVCs per broker)

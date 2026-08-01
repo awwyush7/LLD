@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-shard-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-shard-1
+  template:
+    metadata:
+      labels:
+        app: postgres-shard-1
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          args: ["-c", "max_connections=200", "-c", "shared_buffers=64MB", "-c", "work_mem=2MB"]
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: carrental-config
+                  key: DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: carrental-secrets
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carrental-secrets
+                  key: DB_PASSWORD
+          volumeMounts:
+            - name: postgres-shard-1-storage
+              mountPath: /var/lib/postgresql/data
+            - name: outbox-schema
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "carrental"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 10
+      volumes:
+        - name: postgres-shard-1-storage
+          persistentVolumeClaim:
+            claimName: postgres-shard-1-pvc
+        - name: outbox-schema
+          configMap:
+            name: outbox-schema

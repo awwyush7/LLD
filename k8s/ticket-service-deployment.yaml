@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: ticket-service
 spec:
-  replicas: 1
+  replicas: 2   # read-heavy HTTP + Kafka consumer for TicketTopic (2 partitions active)
   selector:
     matchLabels:
       app: ticket-service
@@ -13,9 +13,9 @@ spec:
         app: ticket-service
     spec:
       initContainers:
-        - name: wait-for-postgres
+        - name: wait-for-pgbouncer
           image: busybox
-          command: ['sh', '-c', 'until nc -z postgres 5432; do sleep 2; done']
+          command: ['sh', '-c', 'until nc -z pgbouncer 6432; do sleep 2; done']
         - name: wait-for-kafka
           image: busybox
           command: ['sh', '-c', 'until nc -z kafka 9092; do echo "waiting for kafka..."; sleep 2; done; echo "Kafka port open — waiting for broker ready..."; sleep 10']
@@ -26,8 +26,15 @@ spec:
           ports:
             - containerPort: 8001
           env:
+            # Primary (through PgBouncer) — used by the Kafka consumer's writes
+            # and by the payment webhook, which reads-then-immediately-writes and
+            # so cannot tolerate replication lag.
             - name: DATABASE_URL
-              value: "postgresql://postgres:Ayush%402002@postgres/carrental"
+              value: "postgresql://postgres:Ayush%402002@pgbouncer:6432/carrental"
+            # Read replica — used only by the two GET polling endpoints
+            # (/ticket/{id}, /payment/status/{id}). See postgres-replica-deployment.yaml.
+            - name: DATABASE_URL_REPLICA
+              value: "postgresql://postgres:Ayush%402002@postgres-replica/carrental"
             - name: KAFKA_BOOTSTRAP_SERVERS
               valueFrom:
                 configMapKeyRef:
@@ -35,3 +42,19 @@ spec:
                   key: KAFKA_BOOTSTRAP_SERVERS
             - name: KAFKA_GROUP_ID
               value: "ticket-service-group"
+            # 2 pods × 12 connections = 24 pooled connections for ticket (against pgbouncer, not Postgres directly)
+            - name: DB_POOL_MAX_SIZE
+              value: "12"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 5

@@ -16,6 +16,21 @@ spec:
         - name: postgres
           image: postgres:16-alpine
           imagePullPolicy: IfNotPresent
+          # Before PgBouncer: 10 ingestion×15 + 8 booking×8 + 8 payment×8 + 2 ticket×8
+          # = 310 real backend connections needed, hence max_connections=400.
+          # After PgBouncer (transaction pooling, default_pool_size=25): every service
+          # pool now multiplexes onto PgBouncer's shared backend pool instead of
+          # holding its own live Postgres backend. Real backend connections drop to
+          # roughly pgbouncer_replicas(2) × default_pool_size(25) = ~50, plus the
+          # replica's replication connection — max_connections can come down accordingly.
+          args: ["-c", "max_connections=120", "-c", "shared_buffers=256MB", "-c", "work_mem=4MB", "-c", "wal_level=replica", "-c", "max_wal_senders=5", "-c", "max_replication_slots=5"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1500m"
+              memory: "512Mi"
           ports:
             - containerPort: 5432
           env:
@@ -39,6 +54,9 @@ spec:
           volumeMounts:
             - name: postgres-storage
               mountPath: /var/lib/postgresql/data  # where postgres stores its files
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d/enable-replication.sh
+              subPath: enable-replication.sh
           readinessProbe:                          # "is postgres ready to accept connections?"
             exec:
               command: ["pg_isready", "-U", "postgres", "-d", "carrental"]
@@ -49,3 +67,7 @@ spec:
         - name: postgres-storage
           persistentVolumeClaim:
             claimName: postgres-pvc              # use the PVC we created
+        - name: postgres-init
+          configMap:
+            name: postgres-init
+            defaultMode: 0755

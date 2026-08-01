@@ -1,24 +1,26 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ingestion-service
+  name: ingestion-shard-2
 spec:
-  replicas: 10   # stateless — scale freely; CAS guard in OutboxRelay handles concurrent relay instances
+  replicas: 4
   selector:
     matchLabels:
       app: ingestion-service
+      shard: "2"
   template:
     metadata:
       labels:
         app: ingestion-service
+        shard: "2"
     spec:
       initContainers:
-        - name: wait-for-pgbouncer
+        - name: wait-for-postgres
           image: busybox
-          command: ['sh', '-c', 'until nc -z pgbouncer 6432; do sleep 2; done']
+          command: ['sh', '-c', 'until nc -z postgres-shard-2 5432; do sleep 2; done']
         - name: wait-for-kafka
           image: busybox
-          command: ['sh', '-c', 'until nc -z kafka 9092; do echo "waiting for kafka..."; sleep 2; done; echo "Kafka port open — waiting for broker ready..."; sleep 10']
+          command: ['sh', '-c', 'until nc -z kafka 9092; do sleep 2; done; sleep 10']
       containers:
         - name: ingestion-service
           image: carrental-ingestion-service:latest
@@ -26,11 +28,8 @@ spec:
           ports:
             - containerPort: 8003
           env:
-            # Through PgBouncer — this is the non-sharded fallback path, used when
-            # ingestion-shard-* are scaled to 0. Every write here is a single-row
-            # INSERT, the ideal case for transaction pooling.
             - name: DATABASE_URL
-              value: "postgresql://postgres:Ayush%402002@pgbouncer:6432/carrental"
+              value: "postgresql://postgres:Ayush%402002@postgres-shard-2/carrental"
             - name: KAFKA_BOOTSTRAP_SERVERS
               valueFrom:
                 configMapKeyRef:
@@ -38,7 +37,6 @@ spec:
                   key: KAFKA_BOOTSTRAP_SERVERS
             - name: KAFKA_GROUP_ID
               value: "ingestion-service-group"
-            # 10 pods × 15 connections = 150 pooled connections for ingestion (against pgbouncer, not Postgres directly)
             - name: DB_POOL_MAX_SIZE
               value: "15"
             - name: OUTBOX_BATCH_SIZE

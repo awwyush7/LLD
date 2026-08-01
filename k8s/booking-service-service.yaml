@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: booking-service   # exists so Prometheus can reach "booking-service:8002/metrics"
+spec:                     # booking-service has no client-facing HTTP API — this is metrics-only
+  selector:
+    app: booking-service
+  ports:
+    - port: 8002
+      targetPort: 8002
+  type: ClusterIP

@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgbouncer-config
+data:
+  # PgBouncer sits between the services and the single "postgres" primary.
+  # Without it, every service pod holds its own idle Postgres connection open
+  # for its whole lifetime (booking 8x8 + payment 8x8 + ticket 2x12 = 152
+  # real backend connections just from these three services, before ingestion
+  # is even counted). Postgres backends are heavyweight OS processes — each
+  # one costs real memory whether it's doing work or sitting idle.
+  #
+  # transaction pooling: a backend connection is only checked out of the pool
+  # for the duration of a single transaction, then returned immediately. asyncpg
+  # pools on the app side still think they hold 8-12 connections each — they're
+  # just holding them to PgBouncer (cheap), not to Postgres (expensive).
+  pgbouncer.ini: |
+    [databases]
+    carrental = host=postgres port=5432 dbname=carrental
+
+    [pgbouncer]
+    listen_addr = 0.0.0.0
+    listen_port = 6432
+    auth_type = md5
+    auth_file = /etc/pgbouncer/userlist.txt
+    pool_mode = transaction
+    max_client_conn = 1000
+    default_pool_size = 25
+    min_pool_size = 5
+    reserve_pool_size = 10
+    reserve_pool_timeout = 3
+    server_idle_timeout = 60
+    admin_users = postgres

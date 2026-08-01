@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: booking-service
 spec:
-  replicas: 1
+  replicas: 8   # matches KAFKA_NUM_PARTITIONS=8 — each pod owns one partition
   selector:
     matchLabels:
       app: booking-service
@@ -13,22 +13,25 @@ spec:
         app: booking-service
     spec:
       initContainers:
-        - name: wait-for-postgres
+        - name: wait-for-pgbouncer
           image: busybox
-          # Loops every 2 seconds until postgres accepts TCP connections on 5432
-          command: ['sh', '-c', 'until nc -z postgres 5432; do echo "waiting for postgres..."; sleep 2; done']
-
+          command: ['sh', '-c', 'until nc -z pgbouncer 6432; do echo "waiting for pgbouncer..."; sleep 2; done']
         - name: wait-for-kafka
           image: busybox
           command: ['sh', '-c', 'until nc -z kafka 9092; do echo "waiting for kafka..."; sleep 2; done; echo "Kafka port open — waiting for broker ready..."; sleep 10']
-
       containers:
         - name: booking-service
           image: carrental-booking-service:latest
           imagePullPolicy: Never
+          ports:
+            - containerPort: 8002   # /metrics only — no client-facing API
           env:
+            # Through PgBouncer (transaction pooling), not straight to postgres:5432.
+            # asyncpg still opens 8 connections per pod, but pgbouncer multiplexes
+            # them onto a small, fixed pool of real Postgres backend connections
+            # instead of every pod holding its own live backend process open.
             - name: DATABASE_URL
-              value: "postgresql://postgres:Ayush%402002@postgres/carrental"
+              value: "postgresql://postgres:Ayush%402002@pgbouncer:6432/carrental"
             - name: KAFKA_BOOTSTRAP_SERVERS
               valueFrom:
                 configMapKeyRef:
@@ -36,3 +39,13 @@ spec:
                   key: KAFKA_BOOTSTRAP_SERVERS
             - name: KAFKA_GROUP_ID
               value: "booking-service-group"
+            # 8 pods × 8 connections = 64 pooled connections for booking (against pgbouncer, not Postgres directly)
+            - name: DB_POOL_MAX_SIZE
+              value: "8"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "96Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"

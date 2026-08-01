@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-replica   # read-only traffic: "postgres-replica:5432"
+spec:
+  selector:
+    app: postgres-replica
+  ports:
+    - port: 5432
+      targetPort: 5432
+  type: ClusterIP

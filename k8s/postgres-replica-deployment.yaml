@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-replica
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # never run two pods against the same ReadWriteOnce PVC at once
+  selector:
+    matchLabels:
+      app: postgres-replica
+  template:
+    metadata:
+      labels:
+        app: postgres-replica
+    spec:
+      initContainers:
+        - name: wait-for-primary
+          image: busybox
+          command: ['sh', '-c', 'until nc -z postgres 5432; do echo "waiting for primary..."; sleep 2; done']
+        # Real Postgres streaming replication: pg_basebackup clones the primary's
+        # data directory byte-for-byte over the replication protocol, then -R writes
+        # standby.signal + primary_conninfo into postgresql.auto.conf so that when
+        # the main container starts postgres against this same data dir, it comes up
+        # in hot-standby mode and starts streaming WAL from the primary instead of
+        # running its own independent database.
+        #
+        # Guarded by "if no PG_VERSION file yet" so a pod restart doesn't try to
+        # re-clone a multi-GB database — it just resumes streaming from where it
+        # left off using the existing data dir.
+        - name: bootstrap-replica
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              if [ -f /var/lib/postgresql/data/PG_VERSION ]; then
+                echo "Replica data dir already initialized — skipping base backup."
+                exit 0
+              fi
+              echo "Taking base backup from primary..."
+              PGPASSWORD="$POSTGRES_PASSWORD" pg_basebackup \
+                -h postgres -U "$POSTGRES_USER" \
+                -D /var/lib/postgresql/data \
+                -Fp -Xs -P -R
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: carrental-secrets
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carrental-secrets
+                  key: DB_PASSWORD
+          volumeMounts:
+            - name: postgres-replica-storage
+              mountPath: /var/lib/postgresql/data
+      containers:
+        - name: postgres-replica
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          # Read-only workload only (TicketService's GET endpoints) — small footprint.
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "384Mi"
+          ports:
+            - containerPort: 5432
+          # No POSTGRES_DB/USER/PASSWORD here on purpose — the data directory was
+          # already initialized by pg_basebackup above, so the entrypoint skips
+          # initdb entirely and just starts postgres in standby mode against it.
+          volumeMounts:
+            - name: postgres-replica-storage
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              # pg_isready returns 0 even while catching up on WAL — that's fine,
+              # a replica a few hundred ms behind is still safe to serve reads from.
+              command: ["pg_isready", "-U", "postgres", "-d", "carrental"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 15
+      volumes:
+        - name: postgres-replica-storage
+          persistentVolumeClaim:
+            claimName: postgres-replica-pvc

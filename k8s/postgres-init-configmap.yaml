@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  # Runs once, only on first boot (empty PGDATA), after initdb but before Postgres
+  # starts accepting connections. The default pg_hba.conf only allows normal client
+  # connections — it has no rule for the special "replication" pseudo-database, so
+  # postgres-replica's pg_basebackup / streaming connection would be rejected without
+  # this. Scoped to the cluster's pod CIDR-ish default (0.0.0.0/0 here since this is
+  # a ClusterIP-only, non-internet-facing database — same trust boundary the existing
+  # "host all all 0.0.0.0/0 md5" rule already relies on).
+  enable-replication.sh: |
+    #!/bin/bash
+    echo "host replication postgres 0.0.0.0/0 md5" >> "$PGDATA/pg_hba.conf"

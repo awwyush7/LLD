@@ -8,4 +8,4 @@ spec:
   ports:
     - port: 8003
       targetPort: 8003
-  type: ClusterIP   # internal only — nginx/Ingress exposes it externally
+  type: LoadBalancer  # minikube tunnel assigns a real IP — use this for load testing instead of port-forward

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service   # exists so Prometheus can reach "payment-service:8010/metrics"
+spec:                     # payment-service has no client-facing HTTP API — this is metrics-only
+  selector:
+    app: payment-service
+  ports:
+    - port: 8010
+      targetPort: 8010
+  type: ClusterIP
