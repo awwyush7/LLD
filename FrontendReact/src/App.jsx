@@ -244,31 +244,29 @@ function App() {
 
 
 
-      const response = await fetch(`${API_BASE}/book`, {
+      // Step 1 — get a server-generated booking_id (no DB write, pure UUID)
+      const intentRes = await fetch(`${API_BASE}/booking-intent`, { method: 'POST' });
+      if (!intentRes.ok) {
+        const err = await intentRes.json().catch(() => ({ detail: 'failed to create booking intent' }));
+        addLog(`Request failed: ${err.detail || 'unknown error'}`, 'error');
+        return;
+      }
+      const { booking_id } = await intentRes.json();
 
+      // Step 2 — confirm with full payload (idempotent — safe to retry with same booking_id)
+      const response = await fetch(`${API_BASE}/confirm/${booking_id}`, {
         method: 'POST',
-
         headers: { 'Content-Type': 'application/json' },
-
         body: JSON.stringify(payload),
-
       });
 
-
-
       if (!response.ok) {
-
         const err = await response.json().catch(() => ({ detail: 'booking request failed' }));
-
         addLog(`Request failed: ${err.detail || 'unknown error'}`, 'error');
-
         return;
-
       }
 
-
-
-      const data = await response.json();
+      const data = { booking_id };
 
       const shortBooking = data.booking_id.slice(0, 8);
 

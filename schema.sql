@@ -24,9 +24,7 @@ CREATE INDEX IF NOT EXISTS idx_bookings_vehicle_date ON bookings(vehicle_id, dat
 CREATE TABLE IF NOT EXISTS tickets (
     booking_id  TEXT        PRIMARY KEY,
     user_id     TEXT        NOT NULL,
-    vehicle_ids JSONB       NOT NULL,
-    from_date   INT         NOT NULL,
-    to_date     INT         NOT NULL,
+    vehicles    JSONB       NOT NULL,   -- [{vehicle_id, from_date, to_date}, ...]
     status      TEXT        NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed', 'failed')),
     reason      TEXT        NULL
 );
@@ -51,9 +49,7 @@ CREATE TABLE IF NOT EXISTS payment_intents (
     booking_id          TEXT        PRIMARY KEY,
     user_id             TEXT        NOT NULL,
     amount              NUMERIC     NOT NULL,
-    vehicle_ids         JSONB       NOT NULL,
-    from_date           INT         NOT NULL,
-    to_date             INT         NOT NULL,
+    vehicles            JSONB       NOT NULL,  -- [{vehicle_id, from_date, to_date}, ...]
     status              TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'awaiting_payment', 'paid', 'failed')),
     stripe_session_id   TEXT        NULL,
     redirect_url        TEXT        NULL,
